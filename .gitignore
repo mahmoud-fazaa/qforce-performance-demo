@@ -1,0 +1,14 @@
+# JMeter results
+results/
+jmeter.log
+*.jtl
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+**/.DS_Store
+Core/.DS_Store

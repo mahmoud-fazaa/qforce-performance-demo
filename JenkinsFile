@@ -1,0 +1,961 @@
+// ===============================
+// GLOBAL CONFIGURATION
+// ===============================
+
+// Email recipients list
+def DEFAULT_EMAIL_RECIPIENTS = [
+  "m.azab@foodics.com",
+  "mahmoud.ahmed@foodics.com",
+  "y.yasser@foodics.com",
+  "nader.elghamry@foodics.com",
+  "n.hagag@foodics.com",
+  "n.zakria@foodics.com",
+  "m.alatroush@foodics.com",
+  "ma.ibrahim@foodics.com",
+  "h.abdelhakim@foodics.com"
+]
+
+properties([
+    parameters([
+        // ===============================
+        // ENVIRONMENT
+        // ===============================
+        choice(
+            name: 'ENV',
+            choices: ['dev', 'prod'],
+            description: 'Single value for x-reqres-env header and API key (REQRES_API_KEY_DEV / REQRES_API_KEY_PROD)'
+        ),
+        // ===============================
+        // GIT BRANCH
+        // ===============================
+        gitParameter(
+            type: 'PT_BRANCH',
+            name: 'GIT_BRANCH',
+            branchFilter: 'origin/(.*)',
+            defaultValue: 'main',
+            description: 'Choose a branch to checkout',
+            selectedValue: 'DEFAULT',
+            sortMode: 'DESCENDING_SMART'
+        ),
+        // ===============================
+        // EXECUTION TYPE
+        // ===============================
+        choice(
+            name: 'EXECUTION_TYPE',
+            choices: ['SINGLE', 'MODULE', 'ALL', 'SERVICE'],
+            description: 'ReqRes: SINGLE = one .jmx in a module | MODULE = all plans in module (products: Products+Posts, users: Users) | ALL/SERVICE = every plan',
+            defaultValue: 'SINGLE'
+        ),
+        // ===============================
+        // SERVICE
+        // ===============================
+        [
+            $class: 'CascadeChoiceParameter',
+            name: 'SERVICE',
+            description: 'Service to test (required for SINGLE, MODULE, SERVICE execution types; hidden for ALL)',
+            choiceType: 'PT_SINGLE_SELECT',
+            referencedParameters: 'EXECUTION_TYPE',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [sandbox: true, script: 'return ["Error loading services"]'],
+                script: [
+                    sandbox: true,
+                    script: '''
+            // For ALL execution type, don't show service selection (runs all services)
+            if (EXECUTION_TYPE == 'ALL') {
+              return []
+            }
+            // For SERVICE execution type, allow selecting ReqRes
+            if (EXECUTION_TYPE == 'SERVICE') {
+              return ['ReqRes']
+            }
+            // For SINGLE and MODULE execution types, require service selection
+            return ['ReqRes']
+          '''
+                ]
+            ]
+        ],
+        // ===============================
+        // MODULE
+        // ===============================
+        [
+            $class: 'CascadeChoiceParameter',
+            name: 'MODULE',
+            description: 'Module to test (required for SINGLE and MODULE execution types; hidden for ALL and SERVICE)',
+            choiceType: 'PT_SINGLE_SELECT',
+            referencedParameters: 'SERVICE,EXECUTION_TYPE',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [sandbox: true, script: 'return ["Error loading modules"]'],
+                script: [
+                    sandbox: true,
+                    script: '''
+            // For ALL and SERVICE execution types, don't show module selection
+            if (EXECUTION_TYPE == 'ALL' || EXECUTION_TYPE == 'SERVICE') {
+              return []
+            }
+            
+            // For SERVICE execution type with selected service, don't show module
+            if (EXECUTION_TYPE == 'SERVICE' && SERVICE) {
+              return []
+            }
+            
+            def modules = [
+              'ReqRes': ['products', 'users']
+            ]
+            return SERVICE ? modules[SERVICE] ?: [] : ['products']
+          '''
+                ]
+            ]
+        ],
+        // ===============================
+        // TEST PLAN
+        // ===============================
+        [
+            $class: 'CascadeChoiceParameter',
+            name: 'TEST_PLAN',
+            description: 'Test plan to execute (only used in SINGLE execution type)',
+            choiceType: 'PT_SINGLE_SELECT',
+            referencedParameters: 'SERVICE,MODULE,EXECUTION_TYPE',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [sandbox: true, script: 'return ["Error loading test plans"]'],
+                script: [
+                    sandbox: true,
+                    script: '''
+            // Only show test plans for SINGLE execution type
+            if (EXECUTION_TYPE != 'SINGLE') {
+              return []
+            }
+            if (!MODULE) {
+              return []
+            }
+            if (MODULE == 'products') {
+              return ['Products.jmx', 'Posts.jmx']
+            }
+            if (MODULE == 'users') {
+              return ['Users.jmx']
+            }
+            return []
+          '''
+                ]
+            ]
+        ],
+        // ===============================
+        // TEST ACTION 
+        // ===============================
+        [
+            $class: 'CascadeChoiceParameter',
+            name: 'TEST_ACTION',
+            description: 'Actions to execute',
+            choiceType: 'PT_SINGLE_SELECT',
+            referencedParameters: 'TEST_PLAN',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [sandbox: true, script: 'return ["ALL"]'],
+                script: [
+                    sandbox: true,
+                    script: '''
+            if (!TEST_PLAN) return ["ALL"]
+
+            if (TEST_PLAN == "Users.jmx" || TEST_PLAN == "Products.jmx" || TEST_PLAN == "Posts.jmx")
+              return ["ALL", "CREATE_UPDATE", "CREATE_DELETE", "CREATE", "LIST"]
+
+            return ["ALL"]
+          '''
+                ]
+            ]
+        ],
+        // ===============================
+        // TARGET HOST (ReqRes / collections API)
+        // ===============================
+        string(
+            name: 'SERVICE_BASE_URL',
+            defaultValue: 'reqres.in',
+            description: 'HTTPS host only (no scheme). For ReqRes, default reqres.in if left as default. Keys: REQRES_API_KEY_* + ENV dev|prod'
+        ),
+        // ===============================
+        // JMETER SETTINGS
+        // ===============================
+        string(name: 'THREADS', defaultValue: '10', description: 'Number of threads (virtual users)'),
+        string(name: 'RAMPUP', defaultValue: '5', description: 'Ramp-up period in seconds'),
+        choice(
+            name: 'EXECUTION_MODE',
+            choices: ['LOOP', 'DURATION'],
+            description: 'LOOP = run N iterations | DURATION = run for N seconds'
+        ),
+        string(name: 'LOOPCOUNT', defaultValue: '1', description: 'Number of loops (used when EXECUTION_MODE=LOOP)'),
+        string(name: 'DURATION', defaultValue: '60', description: 'Duration in seconds (used when EXECUTION_MODE=DURATION)'),
+        // ===============================
+        // EMAIL NOTIFICATION SETTINGS
+        // ===============================
+        booleanParam(
+            name: 'SEND_EMAIL',
+            defaultValue: false,
+            description: 'Send email notification after test completion'
+        ),
+        choice(
+            name: 'EMAIL_RECIPIENT_MODE',
+            choices: ['ALL', 'CUSTOM'],
+            description: 'ALL = send to all default recipients | CUSTOM = choose specific recipients'
+        ),
+        [
+            $class: 'CascadeChoiceParameter',
+            name: 'CUSTOM_EMAIL_RECIPIENTS',
+            description: 'Select email recipients (only used in CUSTOM mode)',
+            choiceType: 'PT_CHECKBOX',
+            referencedParameters: 'EMAIL_RECIPIENT_MODE',
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [sandbox: true, script: 'return ["Error loading email list"]'],
+                script: [
+                    sandbox: true,
+                    script: """
+            // Reference the global email list defined at top
+            return [${DEFAULT_EMAIL_RECIPIENTS.collect { "\"${it}\"" }.join(', ')}]
+          """
+                ]
+            ]
+        ]
+    ])
+])
+
+pipeline {
+    agent any
+    
+    stages {
+        // ===============================
+        // VALIDATION & SETUP
+        // ===============================
+        stage('Validate & Setup') {
+            steps {
+                script {
+                    def productsPlans = ['Products.jmx', 'Posts.jmx']
+                    def usersPlans = ['Users.jmx']
+
+                    if (params.EXECUTION_TYPE == 'SINGLE') {
+                        if (params.SERVICE != 'ReqRes') {
+                            error "SERVICE must be ReqRes"
+                        }
+                        if (params.MODULE == 'products') {
+                            if (!productsPlans.contains(params.TEST_PLAN)) {
+                                error "Invalid test plan '${params.TEST_PLAN}' for module products (expected ${productsPlans})"
+                            }
+                        } else if (params.MODULE == 'users') {
+                            if (!usersPlans.contains(params.TEST_PLAN)) {
+                                error "Invalid test plan '${params.TEST_PLAN}' for module users (expected ${usersPlans})"
+                            }
+                        } else {
+                            error "MODULE must be products or users for SINGLE runs"
+                        }
+                    } else if (params.EXECUTION_TYPE == 'MODULE') {
+                        if (params.SERVICE != 'ReqRes') {
+                            error "SERVICE must be ReqRes"
+                        }
+                        if (!(params.MODULE in ['products', 'users'])) {
+                            error "MODULE must be products or users"
+                        }
+                    }
+
+                    def svcBase = params.SERVICE_BASE_URL?.trim()
+                    if (!svcBase) {
+                        svcBase = 'reqres.in'
+                    }
+                    env.SERVICE_BASE_URL = svcBase
+                    
+                    // Determine email recipients
+                    def emailRecipients = []
+                    if (params.SEND_EMAIL) {
+                        if (params.EMAIL_RECIPIENT_MODE == 'CUSTOM') {
+                            def selected = params.CUSTOM_EMAIL_RECIPIENTS?.toString()?.trim()
+                            if (selected) {
+                                // Fix: Decode HTML entities and handle various formats
+                                selected = selected.replaceAll('&#64;', '@')
+                                                 .replaceAll('&commat;', '@')
+                                                 .replaceAll('&#x40;', '@')
+                                emailRecipients = selected.split(/[,\n]/).collect { it.trim() }.findAll { it }
+                            }
+                            if (emailRecipients.isEmpty()) {
+                                echo "⚠️  CUSTOM mode selected but no emails chosen. Using all default recipients."
+                                emailRecipients = DEFAULT_EMAIL_RECIPIENTS
+                            }
+                        } else {
+                            emailRecipients = DEFAULT_EMAIL_RECIPIENTS
+                        }
+                    }
+                    env.EMAIL_RECIPIENTS = emailRecipients.join(',')
+                    
+                    echo """
+          =====================================
+          🚀 EXECUTION CONFIGURATION
+          -------------------------------------
+          ENV (x-reqres-env) : ${params.ENV}
+          Branch           : ${params.GIT_BRANCH}
+          Execution Type   : ${params.EXECUTION_TYPE}
+          ${params.EXECUTION_TYPE == 'ALL' ? "Service          : ReqRes (all plans)" : (params.EXECUTION_TYPE == 'SERVICE' && (!params.SERVICE || params.SERVICE == '') ? "Service          : ReqRes (all plans)" : "Service          : ${params.SERVICE ?: 'N/A'}")}
+          ${params.MODULE && params.MODULE != 'N/A' ? "Module            : ${params.MODULE}" : ""}
+          ${params.EXECUTION_TYPE == 'SINGLE' ? "Test Plan        : ${params.TEST_PLAN}" : ""}
+          Service base URL : ${env.SERVICE_BASE_URL}
+          ${params.EXECUTION_TYPE == 'SINGLE' ? "Action           : ${params.TEST_ACTION}" : ""}
+          Threads          : ${params.THREADS}
+          Ramp-Up          : ${params.RAMPUP}s
+          Execution Mode   : ${params.EXECUTION_MODE}
+          ${params.EXECUTION_MODE == 'LOOP' ? "Loop Count       : ${params.LOOPCOUNT}" : "Duration         : ${params.DURATION}s"}
+          Email Enabled    : ${params.SEND_EMAIL}
+          ${params.SEND_EMAIL ? "Email Mode       : ${params.EMAIL_RECIPIENT_MODE}" : ""}
+          ${params.SEND_EMAIL ? "Recipients       : ${env.EMAIL_RECIPIENTS}" : ""}
+          =====================================
+          """
+                }
+            }
+        }
+        
+        // ===============================
+        // CHECKOUT
+        // ===============================
+        stage('Checkout') {
+            steps {
+                withCredentials([string(credentialsId: 'PAT', variable: 'GIT_PAT')]) {
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "*/${params.GIT_BRANCH}"]],
+                        userRemoteConfigs: [[
+                            url: "https://${env.GIT_PAT}@github.com/foodics/automation_testing_rms_performance.git"
+                        ]]
+                    ])
+                }
+            }
+        }
+        
+        stage('Prepare Results Directory') {
+            steps {
+                sh "chmod +x scripts/prepare-results-dir.sh"
+                sh "scripts/prepare-results-dir.sh"
+            }
+        }
+        
+        // ===============================
+        // PREPARE TOKENS
+        // ===============================
+        stage('Prepare Business Tokens') {
+            steps {
+                echo 'ℹ️ Skipped: ReqRes tests use x-api-key from Jenkins credentials, not Foodics business tokens.'
+            }
+        }
+        
+        // ===============================
+        // RUN JMETER
+        // ===============================
+        stage('Run JMeter Test') {
+            steps {
+                script {
+                    def svcBase = env.SERVICE_BASE_URL
+                    def reqResAll = [
+                        [service: 'ReqRes', module: 'products', testPlan: 'Products.jmx'],
+                        [service: 'ReqRes', module: 'products', testPlan: 'Posts.jmx'],
+                        [service: 'ReqRes', module: 'users', testPlan: 'Users.jmx']
+                    ]
+                    def testPlansToRun = []
+
+                    if (params.EXECUTION_TYPE == 'SINGLE') {
+                        testPlansToRun = [[service: 'ReqRes', module: params.MODULE, testPlan: params.TEST_PLAN]]
+                    } else if (params.EXECUTION_TYPE == 'MODULE') {
+                        if (params.MODULE == 'products') {
+                            testPlansToRun = [
+                                [service: 'ReqRes', module: 'products', testPlan: 'Products.jmx'],
+                                [service: 'ReqRes', module: 'products', testPlan: 'Posts.jmx']
+                            ]
+                        } else if (params.MODULE == 'users') {
+                            testPlansToRun = [[service: 'ReqRes', module: 'users', testPlan: 'Users.jmx']]
+                        }
+                    } else if (params.EXECUTION_TYPE == 'ALL') {
+                        testPlansToRun = reqResAll
+                    } else if (params.EXECUTION_TYPE == 'SERVICE') {
+                        if (params.SERVICE == 'ReqRes' || !params.SERVICE || params.SERVICE == '') {
+                            testPlansToRun = reqResAll
+                        } else {
+                            error "Unknown SERVICE ${params.SERVICE}"
+                        }
+                    }
+
+                    if (testPlansToRun.isEmpty()) {
+                        error "No test plans to execute"
+                    }
+
+                    sh 'chmod +x scripts/run-jmeter.sh'
+
+                    withCredentials([
+                        string(credentialsId: 'REQRES_API_KEY_DEV', variable: 'REQRES_API_KEY_DEV'),
+                        string(credentialsId: 'REQRES_API_KEY_PROD', variable: 'REQRES_API_KEY_PROD')
+                    ]) {
+                    if (testPlansToRun.size() == 1 && params.EXECUTION_TYPE != 'SERVICE') {
+                        def testPlan = testPlansToRun[0]
+                        def service = testPlan.service
+                        sh """
+            scripts/run-jmeter.sh \
+                  '${service}' \
+                  '${testPlan.module}' \
+                  '${testPlan.testPlan}' \
+                  '${svcBase}' \
+              '${params.THREADS}' \
+              '${params.RAMPUP}' \
+              '${params.EXECUTION_MODE == 'LOOP' ? params.LOOPCOUNT : params.DURATION}' \
+              '${params.ENV}' \
+              '${params.EXECUTION_MODE}' \
+                  '${params.TEST_ACTION ?: 'ALL'}'
+              """
+                    } else {
+                        def parallelStages = [:]
+                        testPlansToRun.each { testPlan ->
+                            def planService = testPlan.service
+                            def planModule = testPlan.module ?: ''
+                            def planTestPlan = testPlan.testPlan
+                            def planBaseUrl = svcBase
+                            def planThreads = params.THREADS
+                            def planRampup = params.RAMPUP
+                            def planLoopsOrDuration = params.EXECUTION_MODE == 'LOOP' ? params.LOOPCOUNT : params.DURATION
+                            def planEnv = params.ENV
+                            def planMode = params.EXECUTION_MODE
+                            def planAction = params.TEST_ACTION ?: 'ALL'
+
+                            def testPlanName = "${planService}_${planTestPlan.replace('.jmx', '')}"
+                            parallelStages["${testPlanName}"] = {
+                                stage("Run ${planService} - ${planTestPlan.replace('.jmx', '')}") {
+                                    echo "Running: ${planService} / ${planTestPlan}"
+                                    sh """
+                        scripts/run-jmeter.sh \
+                          '${planService}' \
+                          '${planModule}' \
+                          '${planTestPlan}' \
+                          '${planBaseUrl}' \
+                          '${planThreads}' \
+                          '${planRampup}' \
+                          '${planLoopsOrDuration}' \
+                          '${planEnv}' \
+                          '${planMode}' \
+                          '${planAction}'
+                      """
+                                }
+                            }
+                        }
+                        parallel parallelStages
+                    }
+                    }
+                }
+            }
+        }
+        
+        stage('Combine HTML Reports') {
+            steps {
+                script {
+                    // For parallel execution, combine all HTML reports into one
+                    if (params.EXECUTION_TYPE != 'SINGLE') {
+                        sh """
+                            # Create combined reports directory
+                            mkdir -p results/combined/html-report
+                            
+                            # Find all HTML report directories and copy them
+                            find results -type d -name "html-report" -not -path "*/combined/*" | while read report_dir; do
+                                test_plan_name=\$(basename \$(dirname "\$report_dir"))
+                                echo "Found report for: \$test_plan_name"
+                                
+                                # Copy report files to combined directory with test plan prefix
+                                if [ -f "\$report_dir/index.html" ]; then
+                                    mkdir -p "results/combined/html-report/\$test_plan_name"
+                                    cp -r "\$report_dir"/* "results/combined/html-report/\$test_plan_name/" 2>/dev/null || true
+                                fi
+                            done
+                            
+                            # Create combined index.html
+                            cat > results/combined/html-report/index.html << 'HTML_EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Combined JMeter Test Results</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
+        .test-plan { margin: 15px 0; padding: 15px; background: #f8f9fa; border-left: 4px solid #007bff; border-radius: 4px; }
+        .test-plan a { color: #007bff; text-decoration: none; font-weight: bold; font-size: 18px; }
+        .test-plan a:hover { text-decoration: underline; }
+        .summary { margin-top: 20px; padding: 15px; background: #e9ecef; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Combined JMeter Test Results</h1>
+        <div class="summary">
+            <p><strong>Total Test Plans:</strong> <span id="total-plans">0</span></p>
+        </div>
+        <h2>Individual Test Plan Reports:</h2>
+        <div id="test-plans"></div>
+    </div>
+    <script>
+        const testPlans = [];
+HTML_EOF
+                            
+                            # Add test plan links
+                            find results -type d -name "html-report" -not -path "*/combined/*" | while read report_dir; do
+                                test_plan_name=\$(basename \$(dirname "\$report_dir"))
+                                echo "        testPlans.push({ name: '\$test_plan_name', path: '\$test_plan_name/index.html' });" >> results/combined/html-report/index.html
+                            done
+                            
+                            cat >> results/combined/html-report/index.html << 'HTML_EOF'
+        document.getElementById('total-plans').textContent = testPlans.length;
+        const container = document.getElementById('test-plans');
+        testPlans.forEach(function(plan) {
+            const div = document.createElement('div');
+            div.className = 'test-plan';
+            div.innerHTML = '<a href="' + plan.path + '" target="_blank">' + plan.name + '</a>';
+            container.appendChild(div);
+        });
+    </script>
+</body>
+</html>
+HTML_EOF
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Publish HTML Reports') {
+            steps {
+                script {
+                    // For single execution, publish the single report
+                    if (params.EXECUTION_TYPE == 'SINGLE') {
+                        def testPlanName = params.TEST_PLAN.replace('.jmx', '')
+                publishHTML(target: [
+                    allowMissing: true,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                            reportDir: "results/${testPlanName}/html-report",
+                    reportFiles: 'index.html',
+                            reportName: "JMeter Test Results - ${testPlanName}",
+                            reportTitles: "JMeter Test Results - ${testPlanName}"
+                        ])
+                    } else {
+                        // For parallel execution, publish the combined report
+                        publishHTML(target: [
+                            allowMissing: true,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: "results/combined/html-report",
+                            reportFiles: 'index.html',
+                            reportName: "Combined JMeter Test Results",
+                            reportTitles: "Combined JMeter Test Results"
+                        ])
+                    }
+                }
+            }
+        }
+        
+        stage('Merge Performance Results') {
+            steps {
+                script {
+                    // For parallel execution, merge all result.jtl files into one
+                    if (params.EXECUTION_TYPE != 'SINGLE') {
+                        sh '''
+                            # Create combined results directory
+                            mkdir -p results/combined
+                            
+                            # Find all result.jtl files (excluding combined directory)
+                            result_files=$(find results -name "result.jtl" -type f -not -path "*/combined/*" 2>/dev/null | sort)
+                            
+                            if [ -z "$result_files" ]; then
+                                echo "⚠️  No result files found to merge"
+                                exit 0
+                            fi
+                            
+                            file_count=$(echo "$result_files" | wc -l)
+                            echo "Merging $file_count result files..."
+                            merged_file="results/combined/merged_result.jtl"
+                            
+                            # Get header from first file
+                            first_file=$(echo "$result_files" | head -1)
+                            if [ ! -f "$first_file" ]; then
+                                echo "⚠️  First result file not found: $first_file"
+                                exit 0
+                            fi
+                            
+                            # Copy header to merged file
+                            head -1 "$first_file" > "$merged_file"
+                            
+                            # Append data from all files (skip headers)
+                            echo "$result_files" | while read -r file; do
+                                if [ -f "$file" ]; then
+                                    tail -n +2 "$file" >> "$merged_file" 2>/dev/null || true
+                                fi
+                            done
+                            
+                            # Verify merge
+                            total_samples=$(tail -n +2 "$merged_file" | wc -l)
+                            echo "✅ Merged $file_count result files into $merged_file"
+                            echo "Total samples in merged file: $total_samples"
+                            
+                            # Show sample counts from individual files for verification
+                            echo "Sample counts from individual files:"
+                            echo "$result_files" | while read -r file; do
+                                if [ -f "$file" ]; then
+                                    count=$(tail -n +2 "$file" | wc -l)
+                                    test_plan=$(basename $(dirname "$file"))
+                                    echo "  $test_plan: $count samples"
+                                fi
+                            done
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Publish Performance Results') {
+            steps {
+                script {
+                    try {
+                        def resultFile = ''
+                        
+                        if (params.EXECUTION_TYPE == 'SINGLE') {
+                            // Single execution - use single result file
+                            def testPlanName = params.TEST_PLAN.replace('.jmx', '')
+                            resultFile = "results/${testPlanName}/result.jtl"
+                        } else {
+                            // Parallel execution - use merged result file
+                            resultFile = "results/combined/merged_result.jtl"
+                            
+                            // If merged file doesn't exist, try to create it
+                            def mergedExists = sh(
+                                script: "test -f ${resultFile} && echo 'exists' || echo 'missing'",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (mergedExists == 'missing') {
+                                echo "⚠️  Merged file not found, attempting to create it..."
+                                sh """
+                                    mkdir -p results/combined
+                                    result_files=\$(find results -name "result.jtl" -type f -not -path "*/combined/*" 2>/dev/null | sort)
+                                    if [ -n "\$result_files" ]; then
+                                        first_file=\$(echo "\$result_files" | head -1)
+                                        if [ -f "\$first_file" ]; then
+                                            head -1 "\$first_file" > results/combined/merged_result.jtl
+                                            echo "\$result_files" | while read -r file; do
+                                                if [ -f "\$file" ]; then
+                                                    tail -n +2 "\$file" >> results/combined/merged_result.jtl 2>/dev/null || true
+                                                fi
+                                            done
+                                            echo "✅ Created merged result file"
+                                        fi
+                                    fi
+                                """
+                            }
+                        }
+                        
+                        // Check if result file exists
+                        def fileExists = sh(
+                            script: "test -f ${resultFile} && echo 'exists' || echo 'missing'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (fileExists == 'exists') {
+                            def fileSize = sh(
+                                script: "wc -l < ${resultFile}",
+                                returnStdout: true
+                            ).trim().toInteger()
+                            
+                            if (fileSize > 1) {
+                        perfReport(
+                                    sourceDataFiles: resultFile,
+                            errorFailedThreshold: 10,
+                            errorUnstableThreshold: 5,
+                            modeThroughput: true,
+                            ignoreFailedBuilds: true,
+                            ignoreUnstableBuilds: true
+                        )
+                                echo "✅ Performance report published from ${resultFile} (${fileSize} lines)"
+                            } else {
+                                echo "⚠️  Result file is empty or has no data: ${resultFile}"
+                            }
+                        } else {
+                            echo "⚠️  Result file not found: ${resultFile}"
+                        }
+                    } catch (Exception e) {
+                        echo "Performance plugin not available or failed: ${e.message}"
+                    }
+                }
+            }
+        }
+        
+        stage('Archive Reports') {
+            steps {
+                archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
+            }
+        }
+        
+        stage('Analyze Results') {
+            steps {
+                script {
+                    echo "Analyzing test results..."
+                    
+                    // For parallel runs, ensure merged file exists
+                    if (params.EXECUTION_TYPE != 'SINGLE') {
+                        def mergedExists = sh(
+                            script: "test -f results/combined/merged_result.jtl && echo 'exists' || echo 'missing'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (mergedExists == 'missing') {
+                            echo "⚠️  Merged file not found, creating it now..."
+                            sh '''
+                                mkdir -p results/combined
+                                result_files=$(find results -name "result.jtl" -type f -not -path "*/combined/*" 2>/dev/null | sort)
+                                if [ -n "$result_files" ]; then
+                                    first_file=$(echo "$result_files" | head -1)
+                                    if [ -f "$first_file" ]; then
+                                        head -1 "$first_file" > results/combined/merged_result.jtl
+                                        echo "$result_files" | while read -r file; do
+                                            if [ -f "$file" ]; then
+                                                tail -n +2 "$file" >> results/combined/merged_result.jtl 2>/dev/null || true
+                                            fi
+                                        done
+                                        echo "✅ Created merged result file with $(tail -n +2 results/combined/merged_result.jtl | wc -l) samples"
+                                    fi
+                                fi
+                            '''
+                        }
+                    }
+                    
+                    // Use merged result file for parallel runs, or single file for single execution
+                    def resultFile = ''
+                    if (params.EXECUTION_TYPE == 'SINGLE') {
+                        def testPlanName = params.TEST_PLAN.replace('.jmx', '')
+                        resultFile = "results/${testPlanName}/result.jtl"
+                    } else {
+                        resultFile = "results/combined/merged_result.jtl"
+                    }
+                    
+                    // Aggregate statistics from result file
+                    def analysisOutput = sh(
+                        script: """
+                            TOTAL_SAMPLES=0
+                            FAILED_SAMPLES=0
+                            TOTAL_TIME=0
+                            
+                            # Process the result file (merged for parallel, single for SINGLE mode)
+                            result_file="${resultFile}"
+                            echo "Analyzing result file: \$result_file"
+                            
+                            if [ -f "\$result_file" ]; then
+                                # Verify file has data
+                                line_count=\$(wc -l < "\$result_file")
+                                echo "File has \$line_count lines (including header)"
+                                
+                                # Calculate stats directly from the file
+                                TOTAL_SAMPLES=\$(awk -F',' 'NR>1 {count++} END {print count+0}' "\$result_file")
+                                FAILED_SAMPLES=\$(awk -F',' 'NR>1 && \$8=="false" {errors++} END {print errors+0}' "\$result_file")
+                                TOTAL_TIME=\$(awk -F',' 'NR>1 {sum+=\$2} END {printf "%.2f", sum+0}' "\$result_file")
+                                
+                                echo "Calculated statistics:"
+                                echo "  Total samples: \$TOTAL_SAMPLES"
+                                echo "  Failed samples: \$FAILED_SAMPLES"
+                                echo "  Total time: \$TOTAL_TIME"
+                            else
+                                echo "⚠️  Result file not found: \$result_file"
+                                echo "Available result files:"
+                                find results -name "result.jtl" -type f 2>/dev/null | head -10
+                            fi
+                            
+                            # Calculate averages
+                            if [ \$TOTAL_SAMPLES -gt 0 ]; then
+                                AVG_RESPONSE_TIME=\$(echo "scale=2; \$TOTAL_TIME / \$TOTAL_SAMPLES" | bc -l 2>/dev/null || echo "0")
+                                SUCCESS_RATE=\$(echo "scale=2; (\$TOTAL_SAMPLES - \$FAILED_SAMPLES) * 100 / \$TOTAL_SAMPLES" | bc -l 2>/dev/null || echo "0")
+                            else
+                                AVG_RESPONSE_TIME=0
+                                SUCCESS_RATE=0
+                            fi
+                            
+                            echo "TOTAL_SAMPLES=\$TOTAL_SAMPLES"
+                            echo "FAILED_SAMPLES=\$FAILED_SAMPLES"
+                            echo "SUCCESS_RATE=\$SUCCESS_RATE"
+                            echo "AVG_RESPONSE_TIME=\$AVG_RESPONSE_TIME"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo analysisOutput
+                    
+                    // Parse statistics for email
+                    def stats = [:]
+                    analysisOutput.split('\n').each { line ->
+                        if (line.contains('=')) {
+                            def parts = line.split('=')
+                            stats[parts[0]] = parts[1]
+                        }
+                    }
+                    
+                    env.TOTAL_SAMPLES = stats['TOTAL_SAMPLES'] ?: '0'
+                    env.FAILED_SAMPLES = stats['FAILED_SAMPLES'] ?: '0'
+                    env.SUCCESS_RATE = stats['SUCCESS_RATE'] ?: '0.00'
+                    env.AVG_RESPONSE_TIME = stats['AVG_RESPONSE_TIME'] ?: '0.00'
+                    
+                    echo """
+                    📊 Test Results Summary:
+                    - Total Samples: ${env.TOTAL_SAMPLES}
+                    - Failed Samples: ${env.FAILED_SAMPLES}
+                    - Success Rate: ${env.SUCCESS_RATE}%
+                    - Average Response Time: ${env.AVG_RESPONSE_TIME}ms
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Send email notification if enabled
+                if (params.SEND_EMAIL) {
+                    def projectName = env.JOB_NAME
+                    def buildNumber = env.BUILD_NUMBER
+                    def buildStatus = currentBuild.currentResult
+                    def buildUrl = env.BUILD_URL
+                    
+                    // Construct correct HTML report URL based on execution type
+                    // Jenkins publishHTML plugin URL-encodes the reportName: spaces -> _20, special chars encoded
+                    def htmlReportUrl
+                    if (params.EXECUTION_TYPE == 'SINGLE') {
+                        def testPlanName = params.TEST_PLAN.replace('.jmx', '')
+                        // URL encode: space -> _20, - -> _2D (but Jenkins uses _20 for space)
+                        def encodedTestPlan = testPlanName.replace(' ', '_20')
+                        htmlReportUrl = "${buildUrl}JMeter_20Test_20Results_20-_20${encodedTestPlan}/"
+                    } else {
+                        htmlReportUrl = "${buildUrl}Combined_20JMeter_20Test_20Results/"
+                    }
+                    
+                    def perfReportUrl = "${buildUrl}performance/"
+                    def perfTrendUrl = "${buildUrl.split('/job/')[0]}/job/${projectName}/performance/"
+                    
+                    // Determine status color and icon
+                    def statusColor = buildStatus == 'SUCCESS' ? '#28a745' : (buildStatus == 'UNSTABLE' ? '#ffc107' : '#dc3545')
+                    def statusIcon = buildStatus == 'SUCCESS' ? '✅' : (buildStatus == 'UNSTABLE' ? '⚠️' : '❌')
+                    
+                    // Format success rate with color
+                    def successRate = env.SUCCESS_RATE?.toFloat() ?: 0
+                    def successColor = successRate >= 95 ? '#28a745' : (successRate >= 80 ? '#ffc107' : '#dc3545')
+                    
+                    emailext(
+                        attachmentsPattern: '',
+                        body: """
+              <html>
+              <head>
+                <style>
+                  body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                  .header { background-color: #f8f9fa; padding: 20px; border-left: 4px solid ${statusColor}; margin-bottom: 20px; }
+                  .header h2 { margin: 0; color: ${statusColor}; }
+                  .section { margin-bottom: 25px; }
+                  .section h3 { background-color: #e9ecef; padding: 10px; margin: 0 0 15px 0; border-left: 3px solid #007bff; }
+                  .config-table, .stats-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+                  .config-table td, .stats-table td { padding: 8px; border-bottom: 1px solid #dee2e6; }
+                  .config-table td:first-child, .stats-table td:first-child { font-weight: bold; width: 200px; color: #495057; }
+                  .stats-box { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }
+                  .stat-item { display: inline-block; margin-right: 30px; }
+                  .stat-value { font-size: 24px; font-weight: bold; color: ${successColor}; }
+                  .stat-label { font-size: 12px; color: #6c757d; text-transform: uppercase; }
+                  .links { margin-top: 20px; }
+                  .links a { display: inline-block; padding: 10px 20px; margin: 5px; background-color: #007bff; color: white; text-decoration: none; border-radius: 4px; }
+                  .links a:hover { background-color: #0056b3; }
+                  .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6; font-size: 12px; color: #6c757d; }
+                </style>
+              </head>
+              <body>
+                <div class="header">
+                  <h2>${statusIcon} Performance Test Results - ${buildStatus}</h2>
+                  <p><strong>Build #${buildNumber}</strong> | ${projectName}</p>
+                </div>
+                
+                <div class="section">
+                  <h3>🚀 Execution Configuration</h3>
+                  <table class="config-table">
+                    <tr><td>ENV (x-reqres-env)</td><td>${params.ENV}</td></tr>
+                    <tr><td>Branch</td><td>${params.GIT_BRANCH}</td></tr>
+                    <tr><td>Service</td><td>${params.SERVICE}</td></tr>
+                    ${params.MODULE && params.MODULE != 'N/A' ? "<tr><td>Module</td><td>${params.MODULE}</td></tr>" : ""}
+                    <tr><td>Service base URL</td><td>${env.SERVICE_BASE_URL}</td></tr>
+                    <tr><td>Test Plan</td><td>${params.TEST_PLAN}</td></tr>
+                    <tr><td>Test Action</td><td>${params.TEST_ACTION}</td></tr>
+                    <tr><td>Threads</td><td>${params.THREADS}</td></tr>
+                    <tr><td>Ramp-Up</td><td>${params.RAMPUP}s</td></tr>
+                    <tr><td>Execution Mode</td><td>${params.EXECUTION_MODE}</td></tr>
+                    ${params.EXECUTION_MODE == 'LOOP' 
+                      ? "<tr><td>Loop Count</td><td>${params.LOOPCOUNT}</td></tr>"
+                      : "<tr><td>Duration</td><td>${params.DURATION}s</td></tr>"}
+                    <tr><td>Email Mode</td><td>${params.EMAIL_RECIPIENT_MODE}</td></tr>
+                    <tr><td>Recipients</td><td>${env.EMAIL_RECIPIENTS}</td></tr>
+                  </table>
+                </div>
+                
+                <div class="section">
+                  <h3>📊 Test Results Summary</h3>
+                  <div class="stats-box">
+                    <div class="stat-item">
+                      <div class="stat-value">${env.TOTAL_SAMPLES}</div>
+                      <div class="stat-label">Total Samples</div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-value" style="color: #dc3545;">${env.FAILED_SAMPLES}</div>
+                      <div class="stat-label">Failed Samples</div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-value" style="color: ${successColor};">${env.SUCCESS_RATE}%</div>
+                      <div class="stat-label">Success Rate</div>
+                    </div>
+                    <div class="stat-item">
+                      <div class="stat-value" style="color: #007bff;">${env.AVG_RESPONSE_TIME}ms</div>
+                      <div class="stat-label">Avg Response Time</div>
+                    </div>
+                  </div>
+                  
+                  <table class="stats-table">
+                    <tr><td>Total Requests</td><td>${env.TOTAL_SAMPLES}</td></tr>
+                    <tr><td>Successful Requests</td><td>${(env.TOTAL_SAMPLES?.toInteger() ?: 0) - (env.FAILED_SAMPLES?.toInteger() ?: 0)}</td></tr>
+                    <tr><td>Failed Requests</td><td><span style="color: #dc3545; font-weight: bold;">${env.FAILED_SAMPLES}</span></td></tr>
+                    <tr><td>Success Rate</td><td><span style="color: ${successColor}; font-weight: bold;">${env.SUCCESS_RATE}%</span></td></tr>
+                    <tr><td>Average Response Time</td><td>${env.AVG_RESPONSE_TIME}ms</td></tr>
+                  </table>
+                </div>
+                
+                <div class="section links">
+                  <h3>📈 Detailed Reports</h3>
+                  <a href="${htmlReportUrl}">📊 HTML Report</a>
+                  <a href="${perfReportUrl}">📈 Performance Report</a>
+                  <a href="${perfTrendUrl}">📉 Performance Trend</a>
+                  <a href="${buildUrl}">🔗 Build Details</a>
+                </div>
+                
+                <div class="footer">
+                  <p>This is an automated notification from Jenkins Performance Testing Pipeline.</p>
+                  <p>Generated on ${new Date().format('yyyy-MM-dd HH:mm:ss')}</p>
+                </div>
+              </body>
+              </html>
+            """,
+                        mimeType: 'text/html',
+                        subject: "${statusIcon} ${projectName} - Build #${buildNumber} - ${buildStatus} - ${env.SUCCESS_RATE}% Success Rate",
+                        to: env.EMAIL_RECIPIENTS
+                    )
+                    echo "✅ Email notification sent to ${env.EMAIL_RECIPIENTS}"
+                } else {
+                    echo "ℹ️  Email notification disabled"
+                }
+            }
+        }
+        success {
+            echo "✅ Performance test completed successfully!"
+        }
+        failure {
+            echo "❌ Performance test failed!"
+        }
+        unstable {
+            echo "⚠️ Performance test is unstable!"
+        }
+    }
+}
