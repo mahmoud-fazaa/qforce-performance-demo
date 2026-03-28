@@ -14,6 +14,7 @@
         <stringProp name="ThreadGroup.ramp_time">${__P(rampUp,5)}</stringProp>
         <stringProp name="ThreadGroup.duration">${__P(duration,1)}</stringProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
         <stringProp name="ThreadGroup.on_sample_error">startnextloop</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
           <stringProp name="LoopController.loops">${__P(loops,1)}</stringProp>
@@ -21,7 +22,7 @@
         </elementProp>
       </ThreadGroup>
       <hashTree>
-        <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="Enironment Variables ">
+        <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="Enironment Variables " enabled="true">
           <collectionProp name="Arguments.arguments">
             <elementProp name="SERVICE_BASE_URL" elementType="Argument">
               <stringProp name="Argument.name">SERVICE_BASE_URL</stringProp>
@@ -51,7 +52,7 @@
           </collectionProp>
         </Arguments>
         <hashTree/>
-        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="JSR223 PreProcessor - randomize product payload">
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="JSR223 PreProcessor - randomize product payload" enabled="true">
           <stringProp name="scriptLanguage">groovy</stringProp>
           <stringProp name="parameters"></stringProp>
           <stringProp name="filename"></stringProp>
@@ -109,7 +110,7 @@ vars.put(&quot;product_create_json_body&quot;, JsonOutput.toJson(createMap))
 vars.put(&quot;product_update_json_body&quot;, JsonOutput.toJson(updateMap))</stringProp>
         </JSR223PreProcessor>
         <hashTree/>
-        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Headers">
+        <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Headers" enabled="true">
           <collectionProp name="HeaderManager.headers">
             <elementProp name="Accept" elementType="Header">
               <stringProp name="Header.name">accept</stringProp>
@@ -131,7 +132,7 @@ vars.put(&quot;product_update_json_body&quot;, JsonOutput.toJson(updateMap))</st
           <stringProp name="TestPlan.comments">POST /api/collections/products/records/</stringProp>
         </HeaderManager>
         <hashTree/>
-        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Create Product Record">
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Create Product Record" enabled="true">
           <boolProp name="IfController.evaluateAll">false</boolProp>
           <boolProp name="IfController.useExpression">true</boolProp>
           <stringProp name="IfController.condition">${__javaScript(vars.get(&quot;TEST_ACTION&quot;) == &quot;CREATE&quot; 
@@ -140,7 +141,7 @@ vars.put(&quot;product_update_json_body&quot;, JsonOutput.toJson(updateMap))</st
 			|| vars.get(&quot;TEST_ACTION&quot;) == &quot;CREATE_DELETE&quot;)}</stringProp>
         </IfController>
         <hashTree>
-          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Collections products - CREATE">
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Collections products - CREATE" enabled="true">
             <intProp name="HTTPSampler.concurrentPool">6</intProp>
             <stringProp name="HTTPSampler.domain">${SERVICE_BASE_URL}</stringProp>
             <stringProp name="HTTPSampler.protocol">https</stringProp>
@@ -160,7 +161,7 @@ vars.put(&quot;product_update_json_body&quot;, JsonOutput.toJson(updateMap))</st
             </elementProp>
           </HTTPSamplerProxy>
           <hashTree>
-            <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="JSON Extractor - record id">
+            <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="JSON Extractor - record id" enabled="true">
               <stringProp name="JSONPostProcessor.referenceNames">record_id</stringProp>
               <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.id</stringProp>
               <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
@@ -249,7 +250,7 @@ vars.put(&quot;product_update_json_body&quot;, JsonOutput.toJson(updateMap))</st
           <hashTree/>
         </hashTree>
       </hashTree>
-      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree">
+      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="true">
         <boolProp name="ResultCollector.error_logging">false</boolProp>
         <objProp>
           <name>saveConfig</name>
