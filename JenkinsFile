@@ -4,15 +4,8 @@
 
 // Email recipients list
 def DEFAULT_EMAIL_RECIPIENTS = [
-  "m.azab@foodics.com",
-  "mahmoud.ahmed@foodics.com",
-  "y.yasser@foodics.com",
-  "nader.elghamry@foodics.com",
-  "n.hagag@foodics.com",
-  "n.zakria@foodics.com",
-  "m.alatroush@foodics.com",
-  "ma.ibrahim@foodics.com",
-  "h.abdelhakim@foodics.com"
+  "mahmoudfazaa251@gmail.com",
+  "mazab1243@gmail.com"
 ]
 
 properties([
