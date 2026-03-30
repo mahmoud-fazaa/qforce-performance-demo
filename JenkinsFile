@@ -4,8 +4,8 @@
 
 // Email recipients list
 def DEFAULT_EMAIL_RECIPIENTS = [
-  "mahmoudfazaa251@gmail.com",
-  "mazab1243@gmail.com"
+  "mazab1243@gmail.com",
+  "mahmoudfazaa251@gmail.com"
 ]
 
 properties([
@@ -15,8 +15,8 @@ properties([
         // ===============================
         choice(
             name: 'ENV',
-            choices: ['dev', 'prod'],
-            description: 'Single value for x-reqres-env header and API key (REQRES_API_KEY_DEV / REQRES_API_KEY_PROD)'
+            choices: ['DEV', 'PROD'],
+            description: 'Environment to use for both x-reqres-env and the matching API key credential (DEV or PROD)'
         ),
         // ===============================
         // GIT BRANCH
@@ -26,7 +26,7 @@ properties([
             name: 'GIT_BRANCH',
             branchFilter: 'origin/(.*)',
             defaultValue: 'main',
-            description: 'Choose a branch to checkout',
+            description: 'Git branch to checkout for this run',
             selectedValue: 'DEFAULT',
             sortMode: 'DESCENDING_SMART'
         ),
@@ -36,8 +36,7 @@ properties([
         choice(
             name: 'EXECUTION_TYPE',
             choices: ['SINGLE', 'MODULE', 'ALL', 'SERVICE'],
-            description: 'ReqRes: SINGLE = one .jmx in a module | MODULE = all plans in module (products: Products+Posts, users: Users) | ALL/SERVICE = every plan',
-            defaultValue: 'SINGLE'
+            description: 'Execution scope: SINGLE = one test plan | MODULE = all plans in one module | SERVICE = all plans in the service | ALL = every available plan'
         ),
         // ===============================
         // SERVICE
@@ -45,7 +44,7 @@ properties([
         [
             $class: 'CascadeChoiceParameter',
             name: 'SERVICE',
-            description: 'Service to test (required for SINGLE, MODULE, SERVICE execution types; hidden for ALL)',
+            description: 'Service under test (shown for SINGLE, MODULE, and SERVICE runs)',
             choiceType: 'PT_SINGLE_SELECT',
             referencedParameters: 'EXECUTION_TYPE',
             script: [
@@ -74,7 +73,7 @@ properties([
         [
             $class: 'CascadeChoiceParameter',
             name: 'MODULE',
-            description: 'Module to test (required for SINGLE and MODULE execution types; hidden for ALL and SERVICE)',
+            description: 'Module under test (shown for SINGLE and MODULE runs)',
             choiceType: 'PT_SINGLE_SELECT',
             referencedParameters: 'SERVICE,EXECUTION_TYPE',
             script: [
@@ -107,7 +106,7 @@ properties([
         [
             $class: 'CascadeChoiceParameter',
             name: 'TEST_PLAN',
-            description: 'Test plan to execute (only used in SINGLE execution type)',
+            description: 'Test plan to run (shown only for SINGLE runs)',
             choiceType: 'PT_SINGLE_SELECT',
             referencedParameters: 'SERVICE,MODULE,EXECUTION_TYPE',
             script: [
@@ -137,65 +136,48 @@ properties([
         // ===============================
         // TEST ACTION 
         // ===============================
-        [
-            $class: 'CascadeChoiceParameter',
+        choice(
             name: 'TEST_ACTION',
-            description: 'Actions to execute',
-            choiceType: 'PT_SINGLE_SELECT',
-            referencedParameters: 'TEST_PLAN',
-            script: [
-                $class: 'GroovyScript',
-                fallbackScript: [sandbox: true, script: 'return ["ALL"]'],
-                script: [
-                    sandbox: true,
-                    script: '''
-            if (!TEST_PLAN) return ["ALL"]
-
-            if (TEST_PLAN == "Users.jmx" || TEST_PLAN == "Products.jmx" || TEST_PLAN == "Posts.jmx")
-              return ["ALL", "CREATE_UPDATE", "CREATE_DELETE", "CREATE", "LIST"]
-
-            return ["ALL"]
-          '''
-                ]
-            ]
-        ],
+            choices: ['ALL', 'CREATE_UPDATE', 'CREATE_DELETE', 'CREATE', 'LIST'],
+            description: 'API action(s) to run. Use ALL to execute the full supported flow'
+        ),
         // ===============================
         // TARGET HOST (ReqRes / collections API)
         // ===============================
         string(
             name: 'SERVICE_BASE_URL',
             defaultValue: 'reqres.in',
-            description: 'HTTPS host only (no scheme). For ReqRes, default reqres.in if left as default. Keys: REQRES_API_KEY_* + ENV dev|prod'
+            description: 'Target API host only, without https:// (example: reqres.in). Leave the default unless you need another host'
         ),
         // ===============================
         // JMETER SETTINGS
         // ===============================
-        string(name: 'THREADS', defaultValue: '10', description: 'Number of threads (virtual users)'),
-        string(name: 'RAMPUP', defaultValue: '5', description: 'Ramp-up period in seconds'),
+        string(name: 'THREADS', defaultValue: '1', description: 'Number of virtual users (recommended: 1 for debug, 5-10 for load)'),
+        string(name: 'RAMPUP', defaultValue: '5', description: 'Ramp-up time in seconds for reaching full load'),
         choice(
             name: 'EXECUTION_MODE',
             choices: ['LOOP', 'DURATION'],
-            description: 'LOOP = run N iterations | DURATION = run for N seconds'
+            description: 'Run mode: LOOP = fixed number of iterations | DURATION = fixed number of seconds'
         ),
-        string(name: 'LOOPCOUNT', defaultValue: '1', description: 'Number of loops (used when EXECUTION_MODE=LOOP)'),
-        string(name: 'DURATION', defaultValue: '60', description: 'Duration in seconds (used when EXECUTION_MODE=DURATION)'),
+        string(name: 'LOOPCOUNT', defaultValue: '1', description: 'Loop count, used only when EXECUTION_MODE = LOOP'),
+        string(name: 'DURATION', defaultValue: '60', description: 'Duration in seconds, used only when EXECUTION_MODE = DURATION (recommended: 30-120)'),
         // ===============================
         // EMAIL NOTIFICATION SETTINGS
         // ===============================
         booleanParam(
             name: 'SEND_EMAIL',
             defaultValue: false,
-            description: 'Send email notification after test completion'
+            description: 'Send an email notification after the test finishes'
         ),
         choice(
             name: 'EMAIL_RECIPIENT_MODE',
             choices: ['ALL', 'CUSTOM'],
-            description: 'ALL = send to all default recipients | CUSTOM = choose specific recipients'
+            description: 'Who should receive the email notification'
         ),
         [
             $class: 'CascadeChoiceParameter',
             name: 'CUSTOM_EMAIL_RECIPIENTS',
-            description: 'Select email recipients (only used in CUSTOM mode)',
+            description: 'Select recipients when EMAIL_RECIPIENT_MODE = CUSTOM',
             choiceType: 'PT_CHECKBOX',
             referencedParameters: 'EMAIL_RECIPIENT_MODE',
             script: [
@@ -313,7 +295,7 @@ pipeline {
                         $class: 'GitSCM',
                         branches: [[name: "*/${params.GIT_BRANCH}"]],
                         userRemoteConfigs: [[
-                            url: "https://${env.GIT_PAT}@github.com/foodics/automation_testing_rms_performance.git"
+                            url: "https://${env.GIT_PAT}@github.com/mahmoud-fazaa/qforce-performance-demo"
                         ]]
                     ])
                 }
@@ -324,15 +306,6 @@ pipeline {
             steps {
                 sh "chmod +x scripts/prepare-results-dir.sh"
                 sh "scripts/prepare-results-dir.sh"
-            }
-        }
-        
-        // ===============================
-        // PREPARE TOKENS
-        // ===============================
-        stage('Prepare Business Tokens') {
-            steps {
-                echo 'ℹ️ Skipped: ReqRes tests use x-api-key from Jenkins credentials, not Foodics business tokens.'
             }
         }
         
